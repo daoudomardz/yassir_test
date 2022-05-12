@@ -1,74 +1,86 @@
 import { FastifyRequest, FastifyReply } from "fastify";
 import { PokemonWithStats } from "models/PokemonWithStats";
+import * as https from "https";
+import * as http from "http";
+import { getContent } from "Utils";
 
-export async function getPokemonByName(request: FastifyRequest, reply: FastifyReply) {
-  var name: string = request.params['name']
+const BASE_URL = "pokeapi.co";
 
-  reply.headers['Accept'] = 'application/json'
+export async function getPokemonByName(
+  request: FastifyRequest,
+  reply: FastifyReply
+) {
+  var name: string = request.params["name"];
+  reply.header("Content-Type", "application/json; charset=utf-8");
 
-  var urlApiPokeman = `https://pokeapi.co/api/v2/pokemon/`;
+  const keepAliveAgent = new https.Agent({ keepAlive: true });
 
-  var params = {}
+  var options = {
+    agent: keepAliveAgent,
+    hostname: BASE_URL,
+    path: `/api/v2/pokemon/${name}`,
+  };
 
-  name == null
-      ? name.trim() != ''
-      ? (params["name"] = name, urlApiPokeman = urlApiPokeman + '/', urlApiPokeman = urlApiPokeman + name)
-      : (urlApiPokeman = urlApiPokeman + '"?offset=20"', urlApiPokeman = urlApiPokeman + "&limit=20")
-      : (urlApiPokeman = urlApiPokeman + '"?offset=20"', urlApiPokeman = urlApiPokeman + "&limit=20")
+  var poke: PokemonWithStats = undefined;
 
-  const http = require('http');
-  const keepAliveAgent = new http.Agent({ keepAlive: true });
+  try {
+    let data = await getContent(options);
+    poke = JSON.parse(data);
 
-  let response: any = ""
-
-  http.request({ ...reply.headers, ...({ hostname: urlApiPokeman, port: 80, }) }, (result) => { response = result })
-
-  if (response == null) {
-    reply.code(404)
+    await computeResponse(poke, reply);
+    reply.code(200).send(poke);
+  } catch (error) {
+    console.log(error);
+    reply.code(400).send("Something is wrong");
   }
-
-  computeResponse(response, reply)
-
-  reply.send(response)
-
-  return reply
+  return reply;
 }
+/**
+ *
+ * Hey, I'm sorry but I really don't get what purpose does this function serve
+ *
+ * the last loops don't make sens because the Pokemon types don't have stats
+ * so I changed the api calls before to get the stats instead of the types.
+ * And I tried to keep the same code structure ( avg...)
+ *
+ * I know I could have reached out and asked but I'm doing this test last minute just before the duration ends so ... Sorry
+ *
+ *
+ */
+export const computeResponse = async (
+  response: PokemonWithStats,
+  reply: FastifyReply
+) => {
+  const resp: PokemonWithStats = response;
 
-export const computeResponse = async (response: unknown, reply: FastifyReply) => {
-  const resp = response as any
+  const keepAliveAgent = new https.Agent({ keepAlive: true });
+  var options = {
+    agent: keepAliveAgent,
+    hostname: BASE_URL,
+  };
+  let stats = resp.stats.map(({ stat }) => stat.name);
+  let pokemonStats = [];
 
-  let types = resp.types.map(type => type.type).map(type => { return type.url }).reduce((types, typeUrl) => types.push(typeUrl));
+  await Promise.all(
+    stats.map(async (type) => {
+      // change the path for each stat
+      options["path"] = `/api/v2/stat/${type}`;
+      try {
+        const res = await getContent(options);
+        pokemonStats.push(JSON.parse(res));
+      } catch (error) {
+        console.log(error);
+      }
+    })
+  );
+  if (pokemonStats == undefined) throw pokemonStats;
 
-  let pokemonTypes = []
-
-  types.forEach(element => {
-    const http = require('http');
-    const keepAliveAgent = new http.Agent({ keepAlive: true });
-
-    http.request({ hostname: element }, (response) => pokemonTypes.push(response))
-
+  var statistics = [];
+  response.stats.forEach((element) => {
+    pokemonStats.forEach((pok) => {
+      pok.name == element.stat.name && statistics.push(element.base_stat);
+      let sum = statistics.reduce((a, b) => a + b, 0);
+      element.averageStat = sum / statistics.length || 0;
+    });
   });
-
-  if (pokemonTypes == undefined)
-    throw pokemonTypes
-
-  response.stats.forEach(element => {
-    var stats = []
-
-    pokemonTypes.map(pok =>
-        pok.stats.map(st =>
-            st.stat.name.toUpperCase() == element.stat.name
-                ? stats.push(st.base_state)
-                : ([])
-        )
-    )
-
-    if (stats) {
-      let avg = stats.reduce((a, b) => a + b) / stats.length
-      element.averageStat = avg
-    } else {
-      element.averageStat = 0
-    }
-  });
-
-}
+};
